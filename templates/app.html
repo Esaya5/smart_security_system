@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+{# One template for every screen. `view` is: login | student | security | admin #}
+{% set staff = view in ('security', 'admin') %}
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Campus Security</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% if view != 'login' %}<link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">{% endif %}
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">Campus Security &amp; Crime Watch</div>
+    <nav>
+        {% if session.get('username') %}
+            <a href="{{ url_for('index') }}">{{ 'Crime Heat Map' if view == 'student' else 'Dashboard' }}</a>
+            <a href="{{ url_for('logout') }}">Logout ({{ session['username'] }},
+                {{ session['role'] }})</a>
+        {% else %}
+            <a href="{{ url_for('login') }}">Login</a>
+        {% endif %}
+    </nav>
+</header>
+
+<main class="container">
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}<div class="flash-stack">
+        {% for category, message in messages %}<div
+            class="flash flash-{{ category }}">{{ message }}</div>{% endfor %}
+    </div>{% endif %}
+{% endwith %}
+
+{# ===================================================== LOGIN ===== #}
+{% if view == 'login' %}
+<div class="card login-card">
+    <h1>Sign In</h1>
+    <form method="POST">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Username <input type="text" name="username" required autofocus></label>
+        <label>Password <input type="password" name="password" required></label>
+        <button type="submit" class="btn btn-primary">Log in</button>
+    </form>
+</div>
+
+{% else %}
+
+{# ================================================ STAFF: OPERATIONS ===== #}
+{% if staff %}
+<div class="alert-banner" id="alert-banner" role="alert">
+    <div><strong>Unrecognized face detected</strong> <span id="alert-time"
+        class="muted small"></span></div>
+    <div><a id="alert-link" href="#" target="_blank" class="btn btn-small btn-primary"
+        style="display:none;text-decoration:none;">View snapshot</a>
+         <button type="button" class="btn btn-small" id="alert-dismiss">Dismiss</button></div>
+</div>
+
+<div class="stat-row">
+    <div class="stat-card"><div class="stat-number" id="stat-unknown">{{ unknown_24h }}</div><div
+        class="stat-label">Unrecognized-face alerts (last 24h)</div></div>
+    <div class="stat-card"><div class="stat-number">{{ active_visitors|length }}</div><div
+        class="stat-label">Active visitors on site</div></div>
+    <div class="stat-card"><div class="stat-number" id="stat-events">{{ events|length }}</div><div
+        class="stat-label">Recent events shown</div></div>
+</div>
+
+<section class="card">
+    <h2>Live Camera Feed</h2>
+    <div class="camera-controls">
+        <form method="POST" action="{{ url_for('start_camera') }}"><input type="hidden"
+            name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-primary"
+                {{ 'disabled' if camera_running }}>{{ 'Camera running' if camera_running else 'Start camera' }}</button></form>
+        <form method="POST" action="{{ url_for('stop_camera') }}"><input type="hidden"
+            name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-danger" {{ '' if camera_running else 'disabled' }}>Stop
+                camera</button></form>
+        <label class="small" style="flex-direction:row;align-items:center;margin-left:auto;"><input
+            type="checkbox" id="sound-toggle" checked> Alert sound</label>
+    </div>
+    <div class="camera-frame">
+        {% if camera_running %}<img src="{{ url_for('camera_stream') }}" alt="Live camera feed">
+        {% else %}<div class="camera-placeholder muted">Camera is not running.</div>{% endif %}
+    </div>
+</section>
+
+<div class="grid-2">
+    <section class="card">
+        <h2>Recent Access Events</h2>
+        <p class="muted small">Auto-refreshes every 5 seconds. <a
+            href="{{ url_for('export_logs_csv') }}">Export as CSV</a></p>
+        <table class="events-table" id="events-table">
+            <thead><tr><th>Time</th><th>Status</th><th>Person</th><th>Evidence</th><th>Alert</th></tr></thead>
+            <tbody>
+            {% for e in events %}
+                <tr class="{{ 'row-unknown' if e.status == 'unknown' }}">
+                    <td>{{ e.timestamp }}</td>
+                    <td><span class="badge badge-{{ e.status }}">{{ e.status }}</span></td>
+                    <td>{{ e.person_name or '—' }}</td>
+                    <td>{% if e.snapshot %}<a
+                        href="{{ url_for('serve_snapshot', filename=e.snapshot) }}"
+                        target="_blank">view</a>{% else %}—{% endif %}</td>
+                    <td>{{ 'Yes' if e.alert_sent }}</td>
+                </tr>
+            {% else %}<tr><td colspan="5" class="muted">No events logged yet.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <h2>Visitor Check-In</h2>
+        <form method="POST" action="{{ url_for('add_visitor') }}" enctype="multipart/form-data"
+            class="enroll-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Visitor name <input type="text" name="name" required></label>
+            <label>Purpose of visit <input type="text" name="purpose"
+                placeholder="maintenance, delivery, guest"></label>
+            <label>Hosted by <input type="text" name="host_name"
+                placeholder="student/staff name"></label>
+            <label>Duration on site
+                <select name="duration_hours"><option value="2">2 hours</option><option value="8"
+                    selected>8 hours</option><option value="24">24 hours</option></select></label>
+            <label>Visitor face photo (optional, clear and front-facing)
+                <input type="file" id="visitor-photo" name="image" accept="image/*"
+                    capture="user"></label>
+            <div>
+                <button type="button" id="visitor-cam-btn" class="btn btn-small">Use webcam</button>
+                <span id="visitor-cam-status" class="muted small"></span>
+                <video id="visitor-video" autoplay playsinline muted
+                    style="display:none;width:100%;max-width:260px;border-radius:8px;margin-top:8px"></video>
+                <img id="visitor-shot" alt="Captured visitor photo"
+                    style="display:none;width:100%;max-width:260px;border-radius:8px;margin-top:8px">
+            </div>
+            <label class="muted small"><input type="checkbox" name="consent" value="1"> Visitor
+                consents to face recording</label>
+            <button class="btn btn-primary">Check in</button>
+        </form>
+        <hr>
+        <h3>Pending visitor requests</h3>
+        <p class="muted small">Visitors record their own face at <a
+            href="{{ url_for('visitor_register') }}"
+            target="_blank">{{ url_for('visitor_register') }}</a>. Check the photo, then approve so
+            they stop triggering unknown-face alerts.</p>
+        <ul class="people-list">
+        {% for r in pending_visitors %}
+            <li><span><img src="{{ url_for('visitor_request_photo', request_id=r.id) }}" alt=""
+                style="width:56px;height:56px;object-fit:cover;border-radius:8px;vertical-align:middle;margin-right:8px">{{ r.name }} <span class="muted small">({{ r.purpose or 'no purpose given' }}, host {{ r.host_name or 'not given' }})</span></span>
+                <span style="display:flex;gap:6px">
+                <form method="POST"
+                    action="{{ url_for('approve_visitor_request', request_id=r.id) }}"><input
+                    type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button
+                    class="btn btn-small btn-primary">Approve</button></form>
+                <form method="POST"
+                    action="{{ url_for('reject_visitor_request', request_id=r.id) }}"><input
+                    type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button
+                    class="btn btn-small btn-danger">Reject</button></form></span></li>
+        {% else %}<li class="muted">No pending requests.</li>{% endfor %}
+        </ul>
+        <hr>
+        <h3>Active visitors</h3>
+        <ul class="people-list">
+        {% for v in active_visitors %}
+            <li><span>{{ v.name }} <span class="muted small">({{ v.purpose or 'no purpose given' }},
+                expires {{ v.expires_at }})</span></span>
+                <form method="POST"
+                    action="{{ url_for('checkout_visitor', visitor_id=v.id) }}"><input type="hidden"
+                    name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="btn btn-small btn-danger">Check out</button></form></li>
+        {% else %}<li class="muted">No active visitors.</li>{% endfor %}
+        </ul>
+    </section>
+</div>
+{% endif %}
+
+{# ==================================================== HEAT MAP (all roles) ===== #}
+<div class="card">
+    <h1>Crime Heat Map</h1>
+</div>
+
+<div class="grid-2">
+    <div class="card map-card">
+        <div class="map-toolbar">
+            <label>Period <select id="f-days"><option value="0">All time</option><option
+                value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option><option value="365">Last
+                    year</option></select></label>
+            <label>Crime type <select id="f-type"><option value="">All
+                types</option></select></label>
+            <label><input type="checkbox" id="f-heat" checked> Density</label>
+            <label><input type="checkbox" id="f-spots" checked> Incident spots</label>
+        </div>
+        <div id="map"></div>
+        <div class="map-legend">
+            <span>Density</span> <span>low</span><span class="legend-ramp"></span><span>high</span>
+            <span id="legend-types"></span>
+        </div>
+    </div>
+
+    <div>
+        <section class="card">
+            <h2>Street Density</h2>
+            <div id="inspect" class="inspect-empty muted small"></div>
+        </section>
+
+        {% if staff %}
+        <section class="card" id="incident-form-card" style="display:none;">
+            <h2>Log Incident</h2>
+            <p class="muted small">Location: <span id="incident-coords"></span></p>
+            <form id="incident-form" class="enroll-form">
+                <label>Crime type <select id="incident-type"></select></label>
+                <label>Street <input type="text" id="incident-street"
+                    placeholder="street name (auto-filled when found)"></label>
+                <label>When it happened <input type="datetime-local" id="incident-datetime"></label>
+                <div style="display:flex;gap:10px;"><button class="btn btn-primary">Add
+                    incident</button>
+                    <button type="button" class="btn btn-small"
+                        id="incident-cancel">Cancel</button></div>
+            </form>
+            <div id="incident-status" class="muted small" style="margin-top:10px;"></div>
+        </section>
+        {% endif %}
+
+        <section class="card">
+            <h2>Most Affected Streets</h2>
+            <ul class="rank-list" id="street-list"><li class="muted">Loading…</li></ul>
+            <h3>Density Hotspots</h3>
+            <ul class="rank-list" id="hotspot-list"><li class="muted">Loading…</li></ul>
+            <h3>Summary</h3>
+            <div id="summary" class="muted small">Loading…</div>
+
+            {% if view == 'student' %}
+            <div class="feedback-widget" id="feedback-widget">
+                <h3>Quick feedback</h3>
+                <p class="muted small">Has this map made you more aware of crime hotspots near
+                    campus?</p>
+                <div class="feedback-buttons">
+                    <button type="button" class="btn btn-primary btn-small"
+                        id="feedback-yes">Yes</button>
+                    <button type="button" class="btn btn-danger btn-small"
+                        id="feedback-no">No</button>
+                </div>
+                <div id="feedback-form-wrap" style="display:none;">
+                    <textarea id="feedback-comment" placeholder="Anything you'd add? (optional)"></textarea>
+                    <button type="button" class="btn btn-primary btn-small" id="feedback-submit"
+                        style="margin-top:8px;">Submit</button>
+                </div>
+            </div>
+            {% endif %}
+        </section>
+    </div>
+</div>
+
+{% if staff %}
+<section class="card"><h2>Incidents by Month</h2>
+    <canvas id="month-chart" height="180"></canvas>
+    <hr><h3>Add an incident</h3>
+    <form id="month-incident-form" class="enroll-form">
+        <label>Crime type <select id="m-type"></select></label>
+        <label>Street <input type="text" id="m-street" placeholder="street name (optional)"></label>
+        <label>When it happened <input type="datetime-local" id="m-datetime"></label>
+        <label>Latitude <input type="number" step="any" id="m-lat" required></label>
+        <label>Longitude <input type="number" step="any" id="m-lng" required></label>
+        <div style="display:flex;gap:10px;align-items:center;"><button class="btn btn-primary">Add
+            incident</button>
+            <span id="m-status" class="muted small"></span></div>
+    </form></section>
+{% endif %}
+
+{# ==================================================== ADMINISTRATION ===== #}
+{% if view == 'admin' %}
+<h1 style="margin-top:8px;">Administration</h1>
+<div class="stat-row" style="margin-top:14px;">
+    <div class="stat-card"><div class="stat-number">{{ people|length }}</div><div
+        class="stat-label">Enrolled (facial recognition)</div></div>
+    <div class="stat-card"><div class="stat-number">{{ users|length }}</div><div
+        class="stat-label">Dashboard login accounts</div></div>
+    <div class="stat-card"><div class="stat-number">{{ retention_days }}d</div><div
+        class="stat-label">Access-log retention</div></div>
+</div>
+
+<div class="grid-2">
+    <section class="card">
+        <h2>Enrolled People (Facial Recognition)</h2>
+        <ul class="people-list">
+        {% for p in people %}
+            <li><span>{{ p.name }} <span class="muted small">({{ p.role }})</span></span>
+                <form method="POST" action="{{ url_for('remove_person', name=p.name) }}"
+                    data-confirm="Remove this person?">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button
+                        class="btn btn-small btn-danger">Remove</button></form></li>
+        {% else %}<li class="muted">No one enrolled yet.</li>{% endfor %}
+        </ul>
+        <hr><h3>Enroll a new person</h3>
+        <form method="POST" action="{{ url_for('add_person') }}" enctype="multipart/form-data"
+            class="enroll-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Full name <input type="text" name="name" required></label>
+            <label>Role <select name="role"><option value="student">Student</option><option
+                value="staff">Staff</option><option
+                value="security">Security</option></select></label>
+            <label>Face photo (clear, front-facing) <input type="file" name="image" accept="image/*"
+                required></label>
+            <button class="btn btn-primary">Enroll</button>
+        </form>
+    </section>
+
+    <section class="card">
+        <h2>Dashboard Login Accounts</h2>
+        <ul class="people-list">
+        {% for u in users %}
+            <li><span>{{ u.username }} <span class="muted small">({{ u.role }})</span></span>
+                <form method="POST"
+                    action="{{ url_for('delete_user_account', username=u.username) }}"
+                    data-confirm="Remove this login?">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="btn btn-small btn-danger"
+                        {{ 'disabled' if u.username == session['username'] }}>Remove</button></form></li>
+        {% endfor %}
+        </ul>
+        <hr><h3>Create a login account</h3>
+        <form method="POST" action="{{ url_for('add_user') }}" class="enroll-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Username <input type="text" name="username" required></label>
+            <label>Temporary password (8+ characters) <input type="password" name="password"
+                required minlength="8"></label>
+            <label>Role <select name="role"><option value="student">Student (heat map
+                only)</option><option value="security">Security</option><option
+                value="admin">Admin</option></select></label>
+            <button class="btn btn-primary">Create account</button>
+        </form>
+    </section>
+</div>
+
+<div class="grid-2">
+    <section class="card">
+        <h2>Data &amp; Retention</h2>
+        <p class="muted small"><a href="{{ url_for('export_logs_csv') }}">Export access logs
+            (CSV)</a> · <a href="{{ url_for('export_crime_csv') }}">Export crime data (CSV)</a></p>
+        <form method="POST" action="{{ url_for('purge_logs') }}"
+            data-confirm="Permanently delete access events and snapshots older than
+                {{ retention_days }} days?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button
+                class="btn btn-danger">Purge old logs now</button></form>
+    </section>
+
+    <section class="card">
+        <h2>Model Evaluation</h2>
+        {% if eval_report and not eval_report.error %}
+            <p class="muted small">Generated {{ eval_report.generated_at }} · tolerance
+                {{ eval_report.match_tolerance_used }}</p>
+            <div class="eval-metrics">
+                <div class="eval-metric"><div
+                    class="eval-value
+                        {{ 'eval-good' if eval_report.meets_85pct_objective else 'eval-warn' }}">{{ (eval_report.accuracy * 100)|round(1) }}%</div><div class="eval-label">Accuracy (target ≥85%)</div></div>
+                <div class="eval-metric"><div
+                    class="eval-value">{{ ((eval_report.false_accept_rate * 100)|round(1)~'%') if eval_report.false_accept_rate is not none else '—' }}</div><div class="eval-label">False Accept Rate</div></div>
+                <div class="eval-metric"><div
+                    class="eval-value">{{ ((eval_report.false_reject_rate * 100)|round(1)~'%') if eval_report.false_reject_rate is not none else '—' }}</div><div class="eval-label">False Reject Rate</div></div>
+                <div class="eval-metric"><div
+                    class="eval-value">{{ eval_report.mean_latency_seconds }}s</div><div
+                    class="eval-label">Mean latency</div></div>
+            </div>
+        {% endif %}
+        <hr><h3>Student Awareness (Heat Map Feedback)</h3>
+        {% if feedback_summary.total_responses %}
+            <div class="eval-metrics">
+                <div class="eval-metric"><div
+                    class="eval-value
+                        {{ 'eval-good' if feedback_summary.meets_80pct_objective else 'eval-warn' }}">{{ feedback_summary.pct_felt_more_aware }}%</div><div class="eval-label">Feel more aware</div></div>
+                <div class="eval-metric"><div
+                    class="eval-value">{{ feedback_summary.total_responses }}</div><div
+                    class="eval-label">Responses</div></div>
+            </div>
+        {% else %}<p class="muted small">No feedback submitted yet.</p>{% endif %}
+    </section>
+</div>
+{% endif %}
+{% endif %}
+</main>
+
+
+<script>
+// Confirmation prompts (kept out of inline handlers so names with quotes can't break the page)
+document.querySelectorAll('form[data-confirm]').forEach(f =>
+    f.addEventListener('submit', e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); }));
+</script>
+
+{% if view != 'login' %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const ROLE = {{ view|tojson }};
+const STAFF = ROLE === 'security' || ROLE === 'admin';
+const CSRF = {{ csrf_token()|tojson }};
+const CAMPUS = [{{ campus_lat }}, {{ campus_lng }}];
+const RADIUS = {{ street_radius }};
+const CAMERA_WAS_RUNNING = {{ 'true' if camera_running else 'false' }};
+const TYPES = ['Robbery', 'Burglary', 'Assault', 'Theft', 'Vandalism', 'Vehicle break-in', 'Other'];
+const COLORS = {'Robbery': '#e5484d', 'Burglary': '#b26be5', 'Assault': '#f08a2c', 'Theft':
+    '#4aa3ff',
+                'Vandalism': '#e8d34a', 'Vehicle break-in': '#2fb8a3', 'Other': '#9aa4b8'};
+
+const $ = id => document.getElementById(id);
+const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' :
+    String(s); return d.innerHTML; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const colorOf = t => COLORS[t] || COLORS['Other'];
+
+// ---- server calls -------------------------------------------------------------
+const filters = { days: 0, type: '' };
+async function api(path, extra = {}) {
+    const p = new URLSearchParams(extra);
+    if (filters.days) p.set('days', filters.days);
+    if (filters.type) p.set('types', filters.type);
+    const res = await fetch(path + '?' + p);
+    if (!res.ok) throw new Error(path + ' -> ' + res.status);
+    return res.json();
+}
+async function post(url, body) {
+    const res = await fetch(url, { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF }, body:
+            JSON.stringify(body) });
+    return res.json();
+}
+
+// ---- street name lookup (OpenStreetMap Nominatim, queued to 1 request/second, cached) --------
+const geoCache = JSON.parse(localStorage.getItem('geo-cache') || '{}');
+let geoChain = Promise.resolve();
+function lookupStreet(lat, lng) {
+    const key = lat.toFixed(4) + ',' + lng.toFixed(4);
+    if (geoCache[key]) return Promise.resolve(geoCache[key]);
+    const job = geoChain.then(async () => {
+        try {
+            const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=en&lat=${lat}&lon=${lng}`);
+            const a = (await r.json()).address || {};
+            const name = a.road || a.pedestrian || a.footway || a.path || a.suburb || null;
+            if (name) { geoCache[key] = name; localStorage.setItem('geo-cache',
+                JSON.stringify(geoCache)); }
+            await sleep(1100);
+            return name;
+        } catch (e) { return null; }
+    });
+    geoChain = job.catch(() => {});
+    return job;
+}
+
+// ---- map -------------------------------------------------------------------------
+const map = L.map('map', { preferCanvas: true }).setView(CAMPUS, 15);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { attribution: '&copy; OpenStreetMap contributors', maxZoom: 19 }).addTo(map);
+L.marker(CAMPUS).addTo(map).bindPopup('Campus');
+
+const heatRenderer = L.canvas({ padding: 0.4 });
+const heatLayer = L.layerGroup().addTo(map);
+const spotLayer = L.layerGroup().addTo(map);
+let probeLayer = null, inspectSeq = 0, pending = null, fitted = false;
+
+function ramp(w) {   // 0..1 -> blue, teal, yellow, orange, red
+    const stops = [[59, 111, 216], [47, 184, 163], [232, 211, 74], [240, 138, 44], [229, 72, 77]];
+    const pos = Math.min(Math.max(w, 0), 1) * (stops.length - 1), i = Math.min(Math.floor(pos),
+        stops.length - 2), t = pos - i;
+    return 'rgb(' + stops[i].map((c, k) => Math.round(c + (stops[i + 1][k] - c) * t)).join(',') +
+        ')';
+}
+
+async function loadHeat() {
+    const data = await api('/api/heatmap');
+    heatLayer.clearLayers();
+    data.cells.sort((a, b) =>
+        a.w - b.w).forEach(c =>          // drawn in metres, so it scales with the map
+        L.circle([c.lat, c.lng], { radius: data.cell_m * 0.8, stroke: false, fillColor: ramp(c.w),
+            fillOpacity: 0.22 + 0.4 * c.w, renderer: heatRenderer, interactive:
+                false }).addTo(heatLayer));
+}
+
+async function loadSpots() {
+    const incidents = await api('/api/incidents');
+    spotLayer.clearLayers();
+    const pts = [];
+    incidents.forEach(inc => {
+        pts.push([inc.lat, inc.lng]);
+        const m = L.circleMarker([inc.lat, inc.lng], { radius: 6, color: '#fff', weight: 1.5,
+            fillColor: colorOf(inc.crime_type), fillOpacity: 0.95, bubblingMouseEvents:
+                false }).addTo(spotLayer);
+        const box = document.createElement('div');
+        box.innerHTML = `<strong>${esc(inc.crime_type || 'Incident')}</strong><br>${esc(inc.street || 'Street unknown')}<br>` +
+                        `<span style="color:#666">${esc(inc.occurred_at || '')}</span>`;
+        if (STAFF) {
+            const del = document.createElement('button');
+            del.textContent = 'Delete'; del.style.cssText = 'margin-top:6px;cursor:pointer';
+            del.onclick = async () => {
+                if (!confirm('Delete this incident record?')) return;
+                await post(`/security/incidents/${inc.id}/delete`, {});
+                map.closePopup(); refreshAll();
+            };
+            box.appendChild(document.createElement('br')); box.appendChild(del);
+        }
+        m.bindPopup(box);
+        m.on('click', () => inspect(L.latLng(inc.lat, inc.lng),
+            inc.street));   // spot click also shows street density
+    });
+    if (!fitted && pts.length) { map.fitBounds(L.latLngBounds(pts).pad(0.1), { maxZoom: 16 });
+        fitted = true; }
+}
+
+// ---- "how dense is crime on THIS street?" -------------------------------------------------
+const LEVEL_CLASS = { 'None recorded': 'none', 'Low': 'low', 'Moderate': 'moderate', 'High': 'high',
+    'Very high': 'very-high' };
+
+function renderInspect(d, latlng, street) {
+    const max = Math.max(1, ...Object.values(d.by_type));
+    const bars = Object.entries(d.by_type).map(([t, n]) =>
+        `<div class="type-bar"><span class="dot" style="background:${colorOf(t)}"></span><span
+            style="min-width:110px">${esc(t)}</span>` +
+        `<span class="bar"
+            style="width:${Math.round(n / max * 100)}px;background:${colorOf(t)}"></span><span
+            class="muted">${n}</span></div>`).join('');
+    const filterNote = (filters.days || filters.type) ?
+        '<div class="muted small">Filters applied: ' +
+        esc([filters.days ? 'last ' + filters.days + ' days' : '',
+            filters.type].filter(Boolean).join(', ')) + '</div>' : '';
+    $('inspect').className = '';
+    $('inspect').innerHTML = `
+        <div class="inspect-head">
+            <div><div class="inspect-street">${esc(street || 'Selected spot')}</div>
+                 <div class="muted small">${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)} · within ${d.radius_m} m</div></div>
+            <span class="lvl lvl-${LEVEL_CLASS[d.level] || 'none'}">${esc(d.level)}</span>
+        </div>
+        <div style="margin:12px 0 4px"><span class="big-number">${d.count}</span>
+            <span class="muted"> incident${d.count === 1 ? '' : 's'} nearby · ${d.per_km2} per km²</span></div>
+        ${d.count ? `<div class="muted small">Denser than ${d.percentile}% of recorded incident locations.
+            ${d.last_30_days} in the last 30 days · latest ${esc((d.last_incident || '').replace('T', ' '))}</div>` : ''}
+        ${d.street_total != null ? `<div class="small"
+            style="margin-top:6px"><strong>${d.street_total}</strong>
+            incident${d.street_total === 1 ? '' : 's'} recorded on ${esc(street)} in
+            total</div>` : ''}
+        <div style="margin-top:10px">${bars}</div>${filterNote}
+        ${STAFF ? '<button class="btn btn-small btn-primary" id="log-here" style="margin-top:10px">Log an incident here</button>' : ''}`;
+    if (STAFF) $('log-here').onclick = () => openIncidentForm(latlng, street);
+}
+
+async function inspect(latlng, knownStreet) {
+    const seq = ++inspectSeq;
+    if (probeLayer) probeLayer.remove();
+    probeLayer = L.layerGroup([
+        L.circle(latlng, { radius: RADIUS, color: '#fff', weight: 1.5, dashArray: '5 5',
+            fillOpacity: 0.04, interactive: false }),
+        L.circleMarker(latlng, { radius: 4, color: '#fff', fillColor: '#fff', fillOpacity: 1,
+            interactive: false }),
+    ]).addTo(map);
+    $('inspect').className = 'muted small'; $('inspect').textContent = 'Measuring density…';
+
+    const base = { lat: latlng.lat, lng: latlng.lng, radius: RADIUS };
+    const streetP = knownStreet ? Promise.resolve(knownStreet) : lookupStreet(latlng.lat,
+        latlng.lng);
+    try {
+        let d = await api('/api/density', base);
+        if (seq !== inspectSeq) return;
+        renderInspect(d, latlng, knownStreet);
+        const street = await streetP;                                   // name arrives a moment later
+        if (seq !== inspectSeq || !street) return;
+        d = await api('/api/density', { ...base, street });
+        if (seq === inspectSeq) { renderInspect(d, latlng, street); pending = { latlng, street }; }
+    } catch (e) { if (seq === inspectSeq) $('inspect').textContent = 'Could not load density for this spot.'; }
+}
+map.on('click', e => inspect(e.latlng, null));
+
+// ---- side lists -------------------------------------------------------------------------------
+async function loadLists() {
+    const [streets, hot, sum] = await Promise.all([api('/api/streets'), api('/api/hotspots'),
+        api('/api/crime-summary')]);
+    const sl = $('street-list');
+    sl.innerHTML = streets.length ? '' :
+        '<li class="muted small">No street names on record yet. They are added when incidents are logged with a street, or by <code>manage.py backfill-streets</code>.</li>';
+    streets.forEach((s, i) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span>${i + 1}. ${esc(s.street)} <span class="muted small">(mostly
+            ${esc(s.top_type)})</span></span><span class="num">${s.count} incidents</span>`;
+        li.onclick = () => { map.flyTo([s.lat, s.lng], 17); inspect(L.latLng(s.lat, s.lng),
+            s.street); };
+        sl.appendChild(li);
+    });
+    const hl = $('hotspot-list');
+    hl.innerHTML = hot.length ? '' : '<li class="muted small">No hotspot data yet.</li>';
+    hot.forEach((h, i) => {
+        const li = document.createElement('li');
+        const label = document.createElement('span');
+        label.textContent = `${i + 1}. ${h.street || h.lat.toFixed(4) + ', ' + h.lng.toFixed(4)}`;
+        if (!h.street) lookupStreet(h.lat, h.lng).then(n => {
+            if (n) label.textContent = `${i + 1}. ${n}`; });
+        li.appendChild(label);
+        li.insertAdjacentHTML('beforeend',
+            `<span class="num">${h.incidents_nearby} nearby ·
+                ${Math.round(h.weight * 100)}%</span>`);
+        li.onclick = () => { map.flyTo([h.lat, h.lng], 17); inspect(L.latLng(h.lat, h.lng),
+            h.street); };
+        hl.appendChild(li);
+    });
+    $('summary').innerHTML = sum.total
+        ? `<div><strong>${sum.total}</strong> incidents on record</div>` +
+            Object.entries(sum.by_type).map(([t, n]) =>
+            `<div><span class="dot" style="background:${colorOf(t)}"></span>${esc(t)}:
+                ${n}</div>`).join('')
+        : 'No incidents match the current filters.';
+}
+
+function refreshAll() {
+    loadHeat().catch(console.error); loadSpots().catch(console.error);
+        loadLists().catch(console.error);
+    if (STAFF) loadMonthChart();
+}
+
+// ---- toolbar --------
+TYPES.forEach(t => $('f-type').insertAdjacentHTML('beforeend', `<option>${esc(t)}</option>`));
+$('legend-types').innerHTML = TYPES.map(t =>
+    `<span><span class="dot" style="background:${colorOf(t)}"></span>${esc(t)}</span>`).join(' ');
+$('f-days').onchange = e => { filters.days = +e.target.value; refreshAll(); };
+$('f-type').onchange = e => { filters.type = e.target.value; refreshAll(); };
+$('f-heat').onchange = e => e.target.checked ? heatLayer.addTo(map) : heatLayer.remove();
+$('f-spots').onchange = e => e.target.checked ? spotLayer.addTo(map) : spotLayer.remove();
+
+// ---- staff: log an incident by clicking the map --------
+function openIncidentForm(latlng, street) {
+    pending = { latlng, street: street || '' };
+    $('incident-coords').textContent = `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`;
+    $('incident-street').value = street || '';
+    if ($('m-lat')) { $('m-lat').value = latlng.lat.toFixed(5);
+        $('m-lng').value = latlng.lng.toFixed(5); if (street) $('m-street').value = street; }
+    $('incident-status').textContent = '';
+    $('incident-form-card').style.display = 'block';
+    $('incident-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+if (STAFF) {
+    TYPES.forEach(t => $('incident-type').insertAdjacentHTML('beforeend',
+        `<option>${esc(t)}</option>`));
+    $('incident-cancel').onclick = () => { $('incident-form-card').style.display = 'none'; };
+    $('incident-form').onsubmit = async ev => {
+        ev.preventDefault();
+        if (!pending) return;
+        const dt = $('incident-datetime').value, st = $('incident-status');
+        st.textContent = 'Saving…';
+        try {
+            const data = await post('/security/incidents/add', {
+                lat: pending.latlng.lat, lng: pending.latlng.lng, crime_type:
+                    $('incident-type').value,
+                street: $('incident-street').value.trim(), occurred_at: dt ? dt.replace('T', ' ') +
+                    ':00' : null });
+            if (!data.ok) { st.textContent = 'Error: ' + (data.error || 'could not save.'); return;
+                }
+            st.textContent = 'Incident logged.';
+            refreshAll(); inspect(pending.latlng, $('incident-street').value.trim() || null);
+            setTimeout(() => { $('incident-form-card').style.display = 'none'; }, 900);
+        } catch (e) { st.textContent = 'Network error saving incident.'; }
+    };
+}
+
+// ---- staff: live events, alert banner + sound, charts --------
+if (STAFF) {
+    let lastId = null, audioCtx = null;
+    const beep = () => {
+        if (!$('sound-toggle').checked) return;
+        try {
+            audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+            const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+            o.type = 'square'; o.frequency.value = 880; g.gain.value = 0.08;
+            o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime +
+                0.35);
+        } catch (e) { /* browsers block audio until the page has been clicked once */ }
+    };
+    $('alert-dismiss').onclick = () => $('alert-banner').classList.remove('show');
+
+    async function pollEvents() {
+        try {
+            const res = await fetch('/api/events');
+            if (!res.ok) return;
+            const data = await res.json(), events = data.events;
+            if (data.camera_running !== CAMERA_WAS_RUNNING) { location.reload(); return; }
+            $('stat-unknown').textContent = data.unknown_24h;
+            $('stat-events').textContent = events.length;
+            if (events.length) {
+                const newest = Math.max(...events.map(e => e.id));
+                if (lastId !== null) {
+                    const fresh = events.filter(e => e.id > lastId && e.status === 'unknown');
+                    if (fresh.length) {
+                        $('alert-time').textContent = fresh[0].timestamp.replace('T', ' ');
+                        const link = $('alert-link');
+                        link.style.display = fresh[0].snapshot ? '' : 'none';
+                        if (fresh[0].snapshot) link.href = '/snapshots/' +
+                            encodeURIComponent(fresh[0].snapshot);
+                        $('alert-banner').classList.add('show'); beep();
+                    }
+                }
+                lastId = newest;
+            } else if (lastId === null) lastId = 0;
+            $('events-table').querySelector('tbody').innerHTML = events.map(e => `
+                <tr class="${e.status === 'unknown' ? 'row-unknown' : ''}"><td>${esc(e.timestamp)}</td>
+                <td><span class="badge badge-${esc(e.status)}">${esc(e.status)}</span></td><td>${esc(e.person_name || '—')}</td>
+                <td>${e.snapshot ? `<a href="/snapshots/${encodeURIComponent(e.snapshot)}"
+                    target="_blank">view</a>` : '—'}</td>
+                <td>${e.alert_sent ? 'Yes' : ''}</td></tr>`).join('') ||
+                    '<tr><td colspan="5" class="muted">No events logged yet.</td></tr>';
+        } catch (e) { console.error('event refresh failed', e); }
+    }
+    pollEvents(); setInterval(pollEvents, 5000);
+
+    // Visitor webcam capture: fills the photo input with a snapshot (needs https or localhost).
+    (function () {
+        const btn = $('visitor-cam-btn'); if (!btn) return;
+        const video = $('visitor-video'), shot = $('visitor-shot'), input = $('visitor-photo'),
+            status = $('visitor-cam-status');
+        let stream = null;
+        btn.onclick = async () => {
+            if (!stream) {
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:
+                        'user' } });
+                    video.srcObject = stream; video.style.display = 'block'; shot.style.display = 'none';
+                    btn.textContent = 'Take photo'; status.textContent = '';
+                } catch (e) {
+                    status.textContent = 'Webcam not available. Use the file option instead.'; }
+                return;
+            }
+            const c = document.createElement('canvas'); c.width = video.videoWidth; c.height = video.videoHeight;
+            c.getContext('2d').drawImage(video, 0, 0);
+            c.toBlob(b => {
+                const dt = new DataTransfer(); dt.items.add(new File([b], 'visitor.jpg', { type:
+                    'image/jpeg' }));
+                input.files = dt.files; shot.src = URL.createObjectURL(b); shot.style.display = 'block';
+                stream.getTracks().forEach(tr =>
+                    tr.stop()); stream = null; video.style.display = 'none';
+                btn.textContent = 'Retake photo'; status.textContent = 'Photo captured.';
+            }, 'image/jpeg', 0.92);
+        };
+    })();
+
+    // Dependency-free charts (canvas), so they still work when the Chart.js CDN is blocked or
+    // offline.
+    function drawChart(canvas, type, labels, values, color) {
+        const draw = () => {
+            const dpr = window.devicePixelRatio || 1, h = 180;
+            canvas.style.width = '100%'; canvas.style.height = h + 'px';
+                canvas.style.display = 'block';
+            const w = canvas.clientWidth || 400;
+            canvas.width = w * dpr; canvas.height = h * dpr;
+            const c = canvas.getContext('2d'); c.scale(dpr, dpr); c.clearRect(0, 0, w, h);
+            c.font = '11px sans-serif'; c.textBaseline = 'middle';
+            if (!labels.length || !values.some(v => v > 0)) {
+                c.fillStyle = '#8993a8'; c.textAlign = 'center';
+                c.fillText('No data yet', w / 2, h / 2); return;
+            }
+            const L = 34, R = 10, T = 10, Bm = 24, pw = w - L - R, ph = h - T - Bm;
+            const step = Math.max(1, Math.ceil(Math.max(...values) / 4)), top = step * 4;
+            c.textAlign = 'right';
+            for (let i = 0; i <= 4; i++) {
+                const y = T + ph - (ph * i / 4);
+                c.strokeStyle = '#262e3d'; c.beginPath(); c.moveTo(L, y); c.lineTo(w - R, y);
+                    c.stroke();
+                c.fillStyle = '#8993a8'; c.fillText(String(step * i), L - 6, y);
+            }
+            const n = labels.length, slot = pw / n, every = Math.ceil(n / 8);
+            c.textAlign = 'center';
+            labels.forEach((l, i) => { if (i % every === 0) { c.fillStyle = '#8993a8'; c.fillText(l,
+                L + slot * (i + .5), h - Bm / 2); } });
+            const px = i => L + slot * (i + .5), py = v => T + ph - ph * v / top;
+            if (type === 'bar') {
+                c.fillStyle = color;
+                values.forEach((v, i) => { const bw = slot * .7; c.fillRect(px(i) - bw / 2, py(v),
+                    bw, T + ph - py(v)); });
+            } else {
+                c.beginPath(); values.forEach((v, i) => i ? c.lineTo(px(i), py(v)) : c.moveTo(px(i),
+                    py(v)));
+                c.strokeStyle = color; c.lineWidth = 2; c.stroke();
+                c.lineTo(px(n - 1), T + ph); c.lineTo(px(0), T + ph); c.closePath();
+                c.fillStyle = 'rgba(224,163,58,.15)'; c.fill();
+                c.fillStyle = color; values.forEach((v, i) => { c.beginPath(); c.arc(px(i), py(v),
+                    3, 0, 7); c.fill(); });
+            }
+        };
+        canvas._redraw = draw; draw();
+    }
+    window.addEventListener('resize', () => ['month-chart'].forEach(id => {
+        const el = $(id); if (el && el._redraw) el._redraw(); }));
+    const chartError = (id, e) => { console.error('chart failed', id, e); const el = $(id);
+        el.insertAdjacentHTML('afterend', '<p class="muted small">Chart could not load.</p>'); };
+    window.loadMonthChart = () => fetch('/api/analytics/incidents-by-month').then(r => r.json())
+        .then(d => drawChart($('month-chart'), 'line', d.map(x => x.month), d.map(x => x.count),
+            '#e0a33a'))
+        .catch(e => chartError('month-chart', e));
+
+    // Add an incident from the form beside the chart; the chart reloads straight away.
+    TYPES.forEach(ty => $('m-type').insertAdjacentHTML('beforeend', `<option>${esc(ty)}</option>`));
+    $('m-lat').value = CAMPUS[0]; $('m-lng').value = CAMPUS[1];
+    $('month-incident-form').onsubmit = async ev => {
+        ev.preventDefault();
+        const st = $('m-status'), dt = $('m-datetime').value;
+        st.textContent = 'Saving…';
+        try {
+            const data = await post('/security/incidents/add', {
+                lat: parseFloat($('m-lat').value), lng: parseFloat($('m-lng').value), crime_type:
+                    $('m-type').value,
+                street: $('m-street').value.trim(), occurred_at: dt ? dt.replace('T', ' ') + ':00' :
+                    null });
+            if (!data.ok) { st.textContent = 'Error: ' + (data.error || 'could not save.'); return;
+                }
+            st.textContent = 'Incident added.'; $('m-street').value = '';
+            refreshAll();
+        } catch (e) { console.error(e); st.textContent = 'Error: could not save.'; }
+    };
+}
+
+// ---- student feedback --------
+if (ROLE === 'student') {
+    const sid = () => localStorage.getItem('crimemap-session') ||
+        (localStorage.setItem('crimemap-session', 'anon-' + Math.random().toString(36).slice(2) +
+            Date.now()), localStorage.getItem('crimemap-session'));
+    let answer = null;
+    const thanks = msg => {
+        $('feedback-widget').innerHTML = `<div class="feedback-thanks">${msg}</div>`; };
+    if (localStorage.getItem('crimemap-feedback-given')) thanks("You've already shared feedback. Thank you!");
+    else {
+        $('feedback-yes').onclick = () => { answer = true;
+            $('feedback-form-wrap').style.display = 'block'; };
+        $('feedback-no').onclick = () => { answer = false;
+            $('feedback-form-wrap').style.display = 'block'; };
+        $('feedback-submit').onclick = async () => {
+            try { await post('/api/feedback', { felt_more_aware: answer, comment:
+                $('feedback-comment').value, session_id: sid() }); }
+            finally { localStorage.setItem('crimemap-feedback-given', '1');
+                thanks('Thanks for the feedback!'); }
+        };
+    }
+}
+
+refreshAll();
+</script>
+{% endif %}
+</body>
+</html>

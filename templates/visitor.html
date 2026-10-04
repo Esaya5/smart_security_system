@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport"
+    content="width=device-width, initial-scale=1">
+<title>Visitor check-in</title><link rel="stylesheet"
+    href="{{ url_for('static', filename='style.css') }}"></head>
+<body><main style="max-width:480px;margin:30px auto;padding:0 16px">
+<section class="card"><h1>Visitor check-in</h1>
+{% with msgs = get_flashed_messages(with_categories=true) %}{% for cat, m in msgs %}<p
+    class="muted">{{ m }}</p>{% endfor %}{% endwith %}
+{% if done %}
+  <p>Thank you. Your photo has been sent to security. Once they approve it, the cameras will
+      recognise you for this visit and you will not trigger an alert.</p>
+  <p class="muted small">Your photo is deleted when you check out or your visit expires.</p>
+{% else %}
+  <p class="muted small">Record your face so the security cameras recognise you during your
+      visit.</p>
+  <form method="POST" enctype="multipart/form-data" class="enroll-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Your name <input type="text" name="name" required maxlength="80"></label>
+    <label>Purpose of visit <input type="text" name="purpose"
+        placeholder="meeting, delivery, guest"></label>
+    <label>Who are you visiting? <input type="text" name="host_name"></label>
+    <label>Photo of your face (clear, front-facing, only you in view)
+      <input type="file" id="vphoto" name="image" accept="image/*" capture="user"></label>
+    <div>
+      <button type="button" id="vcam" class="btn btn-small">Use camera</button> <span id="vstatus"
+          class="muted small"></span>
+      <video id="vvideo" autoplay playsinline muted
+          style="display:none;width:100%;max-width:260px;border-radius:8px;margin-top:8px"></video>
+      <img id="vshot" alt="Your photo"
+          style="display:none;width:100%;max-width:260px;border-radius:8px;margin-top:8px">
+    </div>
+    <label class="muted small"><input type="checkbox" name="consent" value="1"> I agree to my face
+        being recorded for this visit. It is deleted when I check out or my visit expires.</label>
+    <button class="btn btn-primary">Send to security</button>
+  </form>
+  <script>
+  (function () {
+    const $ = id => document.getElementById(id), btn = $('vcam'), video = $('vvideo'),
+        shot = $('vshot'), input = $('vphoto'), st = $('vstatus');
+    let stream = null;
+    btn.onclick = async () => {
+      if (!stream) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+          video.srcObject = stream; video.style.display = 'block'; shot.style.display = 'none';
+          btn.textContent = 'Take photo'; st.textContent = '';
+        } catch (e) { st.textContent = 'Camera not available. Use the file option instead.'; }
+        return;
+      }
+      const c = document.createElement('canvas'); c.width = video.videoWidth; c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0);
+      c.toBlob(b => {
+        const dt = new DataTransfer(); dt.items.add(new File([b], 'visitor.jpg', { type:
+            'image/jpeg' }));
+        input.files = dt.files; shot.src = URL.createObjectURL(b); shot.style.display = 'block';
+        stream.getTracks().forEach(tr => tr.stop()); stream = null; video.style.display = 'none';
+        btn.textContent = 'Retake photo'; st.textContent = 'Photo captured.';
+      }, 'image/jpeg', 0.92);
+    };
+  })();
+  </script>
+{% endif %}
+</section></main></body></html>
